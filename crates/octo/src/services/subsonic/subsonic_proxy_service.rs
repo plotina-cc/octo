@@ -340,6 +340,27 @@ impl SubsonicProxyService {
         self.incoming.as_deref()
     }
 
+    /// The optional proxy identity header, as configured for this deployment.
+    fn proxy_user_header(&self) -> Option<(String, String)> {
+        let incoming = self.incoming.as_deref()?;
+        let name = std::env::var("SUBSONIC__PROXYUSERHEADER").ok()?;
+        let name = name.trim();
+        if name.is_empty() {
+            return None;
+        }
+        joined_request_header(&incoming.headers, name)
+            .map(|value| (name.to_string(), value))
+    }
+
+    /// Adds the proxy identity header to requests that build their own GET request
+    /// instead of going through [`Self::relay_raw`].
+    fn with_proxy_user_header(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        match self.proxy_user_header() {
+            Some((name, value)) => request.header(name, value),
+            None => request,
+        }
+    }
+
     fn url_setting(&self) -> Option<String> {
         self.shared.settings.current().subsonic.url.clone()
     }
@@ -369,9 +390,7 @@ impl SubsonicProxyService {
         let target = request_url(&url)?;
 
         let response = self
-            .shared
-            .client
-            .get(target)
+            .with_proxy_user_header(self.shared.client.get(target))
             .send()
             .await
             .map_err(RelayError::from_reqwest)?;
@@ -414,9 +433,7 @@ impl SubsonicProxyService {
         let target = request_url(&url)?;
 
         let response = self
-            .shared
-            .client
-            .get(target)
+            .with_proxy_user_header(self.shared.client.get(target))
             .send()
             .await
             .map_err(RelayError::from_reqwest)?;
@@ -587,6 +604,8 @@ impl SubsonicProxyService {
             }
         }
 
+        let request = self.with_proxy_user_header(request);
+
         // The timeout bounds the wait for the headers; the body then streams freely.
         let response = match tokio::time::timeout(DEFAULT_TIMEOUT, request.send()).await {
             Ok(result) => result.map_err(RelayError::from_reqwest)?,
@@ -733,8 +752,9 @@ impl SubsonicProxyService {
             .join("&");
         let url = format!("{}/rest/stream?{query}", base.trim_end_matches('/'));
         let target = request_url(&url)?;
+        let request = self.with_proxy_user_header(self.shared.stream_client.get(target));
         let response =
-            match tokio::time::timeout(DEFAULT_TIMEOUT, self.shared.stream_client.get(target).send()).await {
+            match tokio::time::timeout(DEFAULT_TIMEOUT, request.send()).await {
                 Ok(result) => result.map_err(RelayError::from_reqwest)?,
                 Err(_) => return Err(RelayError::Canceled(timeout_message(DEFAULT_TIMEOUT))),
             };
