@@ -244,6 +244,23 @@ const FORWARD_REQUEST_HEADERS: [&str; 8] = [
     "Range",
 ];
 
+/// The static allowlist plus an optional, opt-in authentication header from the
+/// surrounding reverse proxy. Empty by default, so a stock deployment never
+/// forwards a caller-controlled identity header into Navidrome.
+fn forward_request_headers() -> Vec<String> {
+    let mut names: Vec<String> = FORWARD_REQUEST_HEADERS
+        .iter()
+        .map(|name| (*name).to_string())
+        .collect();
+    if let Ok(name) = std::env::var("SUBSONIC__PROXYUSERHEADER") {
+        let name = name.trim();
+        if !name.is_empty() && !names.iter().any(|existing| existing.eq_ignore_ascii_case(name)) {
+            names.push(name.to_string());
+        }
+    }
+    names
+}
+
 /// Response headers passed back to the client (notably the rotated ND token).
 ///
 /// This is an allowlist, so anything missing from it is silently dropped, and X-Total-Count
@@ -451,9 +468,9 @@ impl SubsonicProxyService {
 
         // Forward auth + conditional headers so native Navidrome endpoints work.
         if let Some(incoming) = incoming {
-            for name in FORWARD_REQUEST_HEADERS {
-                if let Some(value) = joined_request_header(&incoming.headers, name) {
-                    request = request.header(name, value);
+            for name in forward_request_headers() {
+                if let Some(value) = joined_request_header(&incoming.headers, &name) {
+                    request = request.header(name.as_str(), value);
                 }
             }
         }
@@ -666,9 +683,9 @@ impl SubsonicProxyService {
         let url = format!("{}/{endpoint}?{query}", base.trim_end_matches('/'));
         let mut request = self.shared.stream_client.get(request_url(&url)?);
         if let Some(incoming) = self.incoming.as_deref() {
-            for name in FORWARD_REQUEST_HEADERS {
-                if let Some(value) = joined_request_header(&incoming.headers, name) {
-                    request = request.header(name, value);
+            for name in forward_request_headers() {
+                if let Some(value) = joined_request_header(&incoming.headers, &name) {
+                    request = request.header(name.as_str(), value);
                 }
             }
         }
